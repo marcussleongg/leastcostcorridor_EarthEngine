@@ -70,46 +70,50 @@ var endPointImage = endPoint
 var roi = startPoint.first().geometry().buffer(35000).bounds();
 var clippedCost = tobCost.clip(roi);
 
-
 // Run cumulative cost function
 var cCostFromStart = clippedCost.cumulativeCost(startPointImage, 30000, false)
-//Map.addLayer(cCostFromStart, {min: 0, max: 30000, palette: ['white', 'yellow', 'orange', 'red', 'black']}, 'Cumulative Cost from start')
 var cCostFromMid = clippedCost.cumulativeCost(midPointImage, 30000, false)
-//Map.addLayer(cCostFromMid, {min: 0, max: 30000, palette: ['white', 'yellow', 'orange', 'red', 'black']}, 'Cumulative Cost from mid')
 //var cCostFromEnd = tobCost.cumulativeCost(endPointImage, 30000, false)
+//Map.addLayer(cCostFromMid, {min: 0, max: 30000, palette: ['white', 'yellow', 'orange', 'red', 'black']}, 'Cumulative Cost from mid')
+//Map.addLayer(cCostFromStart, {min: 0, max: 30000, palette: ['white', 'yellow', 'orange', 'red', 'black']}, 'Cumulative Cost from start')
 //Map.addLayer(cCostFromEnd, {min: 0, max: 30000, palette: ['white', 'yellow', 'orange', 'red', 'black']}, 'Cumulative Cost from end')
 
 // Add the two cumulative cost rasters
 // var addedCost = cCostFromStart.add(cCostFromEnd);
-var addedCost = cCostFromStart.add(cCostFromMid);
+var addedCost = cCostFromStart.add(cCostFromMid).clip(roi);
 
-// Find the minimum cost from start to end, vice-versa
+// Declare how much to scale up the raster by to increase computation speed
+// This appears to have the largest impact on computation time
+var scale_up = 3;
+
+// Find the minimum cost from addedCost raster
 var minCostDict = addedCost.reduceRegion({
+  // reducer being min means we are getting the minimum from all pixels in addedCost
   reducer: ee.Reducer.min(),
   geometry: clippedCost.geometry(),
-  scale: 30,  // use your cost raster scale
+  scale: 30 * scale_up,  // using a coarser scale for better speed
   maxPixels: 1e13,
+  // if too many pixels at given scale, bestEffort uses a larger scale to ensure function runs successfully
   bestEffort: true
 });
 
 var minCost = ee.Number(minCostDict.get('cumulative_cost'));
 
-// Extract LCC by applying a threshold
-// var tolerance = 0.10;
-// var threshold = minCost.multiply(1 + tolerance);
-//var corridor = addedCost.lte(threshold);
-
-// Visualize the LCC
-var leastCostCorridor = addedCost.lte(minCost.add(10));
+// Get pixels in LCC by selecting those with cost ≤ minCost + threshold
+// tolerance has same units as cost, which is derived from Tobler's hiking function
+var tolerance = 5;
+var leastCostCorridor = addedCost.lte(minCost.add(tolerance));
 
 // Convert the raster path to a vector. This is more robust for visualization.
 var pathVector = leastCostCorridor.selfMask().reduceToVectors({
   geometry: clippedCost.geometry(),
-  scale: 30,
+  scale: 30 * scale_up,
   geometryType: 'polygon',
   eightConnected: true,
   bestEffort: true
 });
+
+print(pathVector)
 
 // Style the vector path to be a thick, bright red line.
 var styledPath = pathVector.style({
