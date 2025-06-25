@@ -39,6 +39,8 @@ print(tobCost);
 // Converting the point to image
 var startPoint = ee.FeatureCollection('projects/ee-poleinikov/assets/scotstart');
 Map.addLayer(startPoint, {color: 'blue'}, 'Start Point');
+var midPoint = ee.FeatureCollection('projects/ee-poleinikov/assets/scotmid');
+Map.addLayer(midPoint, {color: 'blue'}, 'Mid Point');
 var endPoint = ee.FeatureCollection('projects/ee-poleinikov/assets/scotend');
 Map.addLayer(endPoint, {color: 'blue'}, 'End Point');
 
@@ -49,34 +51,73 @@ var startPointImage = startPoint
     reducer: ee.Reducer.first()
   });
   
-var endPointImage = endPoint
+var midPointImage = midPoint
   .map(function(f) { return f.set('constant', 1); })  // assign constant value
   .reduceToImage({
     properties: ['constant'],
     reducer: ee.Reducer.first()
   });
 
+  
+var endPointImage = endPoint
+  .map(function(f) { return f.set('constant', 1); })  // assign constant value
+  .reduceToImage({
+    properties: ['constant'],
+    reducer: ee.Reducer.first()
+  });
+  
+// specify region of interest
+var roi = startPoint.first().geometry().buffer(35000).bounds();
+var clippedCost = tobCost.clip(roi);
+
+
 // Run cumulative cost function
-var cCostFromStart = tobCost.cumulativeCost(startPointImage, 60000, false)
-Map.addLayer(cCostFromStart, {min: 0, max: 60000, palette: ['white', 'yellow', 'orange', 'red', 'black']}, 'Cumulative Cost from start')
-var cCostFromEnd = tobCost.cumulativeCost(endPointImage, 60000, false)
-Map.addLayer(cCostFromEnd, {min: 0, max: 60000, palette: ['white', 'yellow', 'orange', 'red', 'black']}, 'Cumulative Cost from end')
+var cCostFromStart = clippedCost.cumulativeCost(startPointImage, 30000, false)
+//Map.addLayer(cCostFromStart, {min: 0, max: 30000, palette: ['white', 'yellow', 'orange', 'red', 'black']}, 'Cumulative Cost from start')
+var cCostFromMid = clippedCost.cumulativeCost(midPointImage, 30000, false)
+//Map.addLayer(cCostFromMid, {min: 0, max: 30000, palette: ['white', 'yellow', 'orange', 'red', 'black']}, 'Cumulative Cost from mid')
+//var cCostFromEnd = tobCost.cumulativeCost(endPointImage, 30000, false)
+//Map.addLayer(cCostFromEnd, {min: 0, max: 30000, palette: ['white', 'yellow', 'orange', 'red', 'black']}, 'Cumulative Cost from end')
 
 // Add the two cumulative cost rasters
-var addedCost = cCostFromStart.add(cCostFromEnd);
+// var addedCost = cCostFromStart.add(cCostFromEnd);
+var addedCost = cCostFromStart.add(cCostFromMid);
 
 // Find the minimum cost from start to end, vice-versa
-var minTotalCost = addedCost.reduceRegion({
+var minCostDict = addedCost.reduceRegion({
   reducer: ee.Reducer.min(),
-  geometry: tobCost.geometry(),
+  geometry: clippedCost.geometry(),
   scale: 30,  // use your cost raster scale
-  maxPixels: 1e13
-}).get('sum');
+  maxPixels: 1e13,
+  bestEffort: true
+});
+
+var minCost = ee.Number(minCostDict.get('cumulative_cost'));
 
 // Extract LCC by applying a threshold
-var tolerance = 0.10;
-var threshold = ee.Number(minTotalCost).multiply(1 + tolerance);
-var corridor = addedCost.lte(threshold);
+// var tolerance = 0.10;
+// var threshold = minCost.multiply(1 + tolerance);
+//var corridor = addedCost.lte(threshold);
 
 // Visualize the LCC
-Map.addLayer(corridor.selfMask(), {palette: ['blue']}, 'Least Cost Corridor');
+var leastCostCorridor = addedCost.lte(minCost.add(10));
+
+// Convert the raster path to a vector. This is more robust for visualization.
+var pathVector = leastCostCorridor.selfMask().reduceToVectors({
+  geometry: clippedCost.geometry(),
+  scale: 30,
+  geometryType: 'polygon',
+  eightConnected: true,
+  bestEffort: true
+});
+
+// Style the vector path to be a thick, bright red line.
+var styledPath = pathVector.style({
+  color: 'FF0000', // Bright red
+  width: 3       // Line width in pixels
+});
+
+// Add the styled path to the map.
+Map.addLayer(styledPath, {}, 'Least-Cost Path (Styled Vector)');
+//Map.addLayer(corridor.selfMask(), {palette: ['red']}, 'Least Cost Corridor');
+//Map.centerObject(styledPath, 18)
