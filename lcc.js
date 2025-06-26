@@ -101,7 +101,7 @@ var minCost = ee.Number(minCostDict.get('cumulative_cost'));
 
 // Get pixels in LCC by selecting those with cost ≤ minCost + threshold
 // tolerance has same units as cost, which is derived from Tobler's hiking function
-var tolerance = 5;
+var tolerance = 1;
 var leastCostCorridor = addedCost.lte(minCost.add(tolerance));
 
 // Convert the raster path to a vector. This is more robust for visualization.
@@ -125,3 +125,9 @@ var styledPath = pathVector.style({
 Map.addLayer(styledPath, {}, 'Least-Cost Path (Styled Vector)');
 //Map.addLayer(corridor.selfMask(), {palette: ['red']}, 'Least Cost Corridor');
 //Map.centerObject(styledPath, 18)
+
+Export.table.toDrive({
+  collection: pathVector,
+  description: 'lcc_export',
+  fileFormat: 'SHP'
+});
