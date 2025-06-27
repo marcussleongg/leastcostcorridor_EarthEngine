@@ -24,11 +24,20 @@ var walk = ee.List.sequence(0, maxSteps).iterate(function(_, prev) {
   var prevList = ee.List(prev.get('path'));
 
   // Sample cumulative cost at last point
-  var costAtPoint = cumulative.sample({
-    region: lastPoint,
+  var costAtPointResult = cumulative.reduceRegion({
+    reducer: ee.Reducer.first(),
+    geometry: lastPoint,
     scale: stepSize,
-    numPixels: 1
-  }).first().getNumber('sum');
+    maxPixels: 1
+  });
+  
+  // Get the first available band value
+  var costAtPoint = ee.Number(0); // Default value
+  costAtPoint = ee.Algorithms.If(
+    costAtPointResult.size().gt(0), // If the result has any keys
+    ee.Number(costAtPointResult.values().get(0)), // Get the first value
+    costAtPoint
+  );
 
   // Create 8 surrounding points using bearing angles
   var directions = ee.List([
@@ -44,25 +53,21 @@ var walk = ee.List.sequence(0, maxSteps).iterate(function(_, prev) {
 
   // Write function which takes a point and an offset and returns a new point
   function offsetPoint(lat, lon, distance, bearing) {
-    var R = ee.Number(6378137);  // Radius of Earth in meters
-    var brng = ee.Number(bearing).multiply(Math.PI).divide(180); // to radians
-    var lat1 = ee.Number(lat).multiply(Math.PI).divide(180);
-    var lon1 = ee.Number(lon).multiply(Math.PI).divide(180);
+    // Use a simpler approximation to avoid complex geodesic calculations
+    // Convert distance from meters to degrees (approximate)
+    var latOffset = distance.divide(111000); // 1 degree ≈ 111,000 meters
+    var lonOffset = distance.divide(111000).divide(lat.cos()); // Adjust for latitude
     
-    // Convert distance to Earth Engine number
-    var d = ee.Number(distance);
-    var dR = d.divide(R); // distance / radius as ee.Number
-  
-    var lat2 = lat1.sin().multiply(dR.cos()).multiply(brng.cos()).add(lat1.cos().multiply(dR.cos())).asin();
-    var lon2 = lon1.add(
-      brng.sin().multiply(dR).multiply(lat1.cos())
-      .atan2(dR.cos().subtract(lat1.sin().multiply(lat2.sin())))
-    );
-  
-    return ee.Geometry.Point([
-      lon2.multiply(180).divide(Math.PI),
-      lat2.multiply(180).divide(Math.PI)
-    ]);
+    // Convert bearing to x,y offsets
+    var bearingRad = ee.Number(bearing).multiply(Math.PI).divide(180);
+    var dx = lonOffset.multiply(bearingRad.cos());
+    var dy = latOffset.multiply(bearingRad.sin());
+    
+    // Apply offsets
+    var newLat = lat.add(dy);
+    var newLon = lon.add(dx);
+    
+    return ee.Geometry.Point([newLon, newLat]);
   }
 
   var neighbors = directions.map(function(offset) {
@@ -79,11 +84,20 @@ var walk = ee.List.sequence(0, maxSteps).iterate(function(_, prev) {
     var neighbor = offsetPoint(lat, lon, distance, bearing);
     
     // Get the cost at one point, that is the neighbor
-    var cost = cumulative.sample({
-      region: neighbor,
+    var costResult = cumulative.reduceRegion({
+      reducer: ee.Reducer.first(),
+      geometry: neighbor,
       scale: stepSize,
-      numPixels: 1
-    }).first().getNumber('sum');
+      maxPixels: 1
+    });
+    
+    // Always ensure we have a valid cost value
+    var cost = ee.Number(999999); // Default high cost
+    cost = ee.Algorithms.If(
+      costResult.size().gt(0), // If the result has any keys
+      ee.Number(costResult.values().get(0)), // Get the first value
+      cost
+    );
 
     return ee.Dictionary({
       'point': neighbor,
@@ -91,21 +105,37 @@ var walk = ee.List.sequence(0, maxSteps).iterate(function(_, prev) {
     });
   });
 
-  // Choose neighbor with lowest cost
+  // Choose neighbor with lowest cost - simplified approach
   var best = neighbors.iterate(function(neighbor, acc) {
     neighbor = ee.Dictionary(neighbor);
     acc = ee.Dictionary(acc);
     var neighborCost = ee.Number(neighbor.get('cost'));
     var accCost = ee.Number(acc.get('cost'));
+    
+    // Ensure both costs are valid numbers before comparison
+    var validNeighborCost = ee.Algorithms.If(
+      neighborCost,
+      neighborCost,
+      ee.Number(999999)
+    );
+    
+    var validAccCost = ee.Algorithms.If(
+      accCost,
+      accCost,
+      ee.Number(999999)
+    );
+    
+    // Check if both costs are valid before comparison
     return ee.Algorithms.If(
-      neighborCost.lt(accCost),
+      ee.Number(validNeighborCost).lt(ee.Number(validAccCost)),
       neighbor,
       acc
     );
-  }, ee.Dictionary({ 'point': ee.Geometry.Point([0, 0]), 'cost': ee.Number(999999) }));
-  print(best);
-  var nextPoint = ee.Geometry(best.get('point'));
-  var nextCost = ee.Number(best.get('cost'));
+  }, ee.Dictionary({ 'point': lastPoint, 'cost': costAtPoint }));
+  
+  var bestDict = ee.Dictionary(best);
+  var nextPoint = ee.Geometry(bestDict.get('point'));
+  var nextCost = ee.Number(bestDict.get('cost'));
 
   // Stop if cost did not decrease (reached source)
   return ee.Algorithms.If(
