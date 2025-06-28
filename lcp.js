@@ -3,153 +3,108 @@ var cost = ...; // your scalar cost raster (already clipped)
 var sourceImage = ...;  // rasterized source point
 var destGeom = destinationPoint;  // ee.Geometry.Point
 
+// Optimize the cumulative cost computation
 var cumulative = cost.cumulativeCost({
   source: sourceImage,
   maxDistance: 50000
 });
 
-// --- Step 2: Trace path from destination back to source
-var stepSize = 30;  // meters
-var pathPoints = ee.List([]);
-var maxSteps = 1000;
+// --- Step 2: Pre-calculate a neighborhood "lookup" image
+// Define a 3x3 pixel kernel.
+var kernel = ee.Kernel.square(1, 'pixels');
 
-var start = destGeom;
-var step = 0;
+// Create an image where each band contains the cost of a neighbor.
+// This is a single, efficient, parallel operation.
+var costNeighborhood = cumulative.neighborhoodToBands(kernel);
 
-var walk = ee.List.sequence(0, maxSteps).iterate(function(_, prev) {
-  // Typecast previous value to dictionary
-  prev = ee.Dictionary(prev);
 
-  var lastPoint = ee.Geometry(prev.get('point'));
-  var prevList = ee.List(prev.get('path'));
+// --- Step 3: Iteratively trace the path from destination to source
+var maxSteps = 300; // Define max number of steps to prevent infinite loops
+var startPoint = destGeom;
 
-  // Sample cumulative cost at last point
-  var costAtPointResult = cumulative.reduceRegion({
+// This is the initial list of points for our path. It starts with the destination coordinates.
+var initialPath = ee.List([startPoint.coordinates()]);
+
+// The iterative function to find the path.
+var path = ee.List.sequence(1, maxSteps).iterate(function(i, previousPath) {
+  previousPath = ee.List(previousPath);
+  var lastPointCoords = previousPath.get(-1);
+  var lastPoint = ee.Geometry.Point(lastPointCoords);
+
+  // Check if we have reached the source (or are very close).
+  // A cost of 0 means we are at the source pixel.
+  var costAtLastPoint = cumulative.reduceRegion({
     reducer: ee.Reducer.first(),
     geometry: lastPoint,
-    scale: stepSize,
-    maxPixels: 1
-  });
+    scale: 30
+  }).values().get(0);
   
-  // Get the first available band value
-  var costAtPoint = ee.Number(0); // Default value
-  costAtPoint = ee.Algorithms.If(
-    costAtPointResult.size().gt(0), // If the result has any keys
-    ee.Number(costAtPointResult.values().get(0)), // Get the first value
-    costAtPoint
+  // Add null checking to prevent the error
+  var atSource = ee.Algorithms.If(
+    costAtLastPoint,
+    ee.Number(costAtLastPoint).eq(0),
+    false  // If costAtLastPoint is null, we're not at source
   );
 
-  // Create 8 surrounding points using bearing angles
-  var directions = ee.List([
-    [stepSize, 0],    // North
-    [stepSize, 45],   // Northeast
-    [stepSize, 90],   // East
-    [stepSize, 135],  // Southeast
-    [stepSize, 180],  // South
-    [stepSize, 225],  // Southwest
-    [stepSize, 270],  // West
-    [stepSize, 315]   // Northwest
-  ]);
-
-  // Write function which takes a point and an offset and returns a new point
-  function offsetPoint(lat, lon, distance, bearing) {
-    // Use a simpler approximation to avoid complex geodesic calculations
-    // Convert distance from meters to degrees (approximate)
-    var latOffset = distance.divide(111000); // 1 degree ≈ 111,000 meters
-    var lonOffset = distance.divide(111000).divide(lat.cos()); // Adjust for latitude
-    
-    // Convert bearing to x,y offsets
-    var bearingRad = ee.Number(bearing).multiply(Math.PI).divide(180);
-    var dx = lonOffset.multiply(bearingRad.cos());
-    var dy = latOffset.multiply(bearingRad.sin());
-    
-    // Apply offsets
-    var newLat = lat.add(dy);
-    var newLon = lon.add(dx);
-    
-    return ee.Geometry.Point([newLon, newLat]);
-  }
-
-  var neighbors = directions.map(function(offset) {
-    offset = ee.List(offset);
-    var distance = ee.Number(offset.get(0));
-    var bearing = ee.Number(offset.get(1));
-    
-    // Get coordinates of the last point
-    var coords = lastPoint.coordinates();
-    var lat = ee.Number(coords.get(1));
-    var lon = ee.Number(coords.get(0));
-    
-    // Use the offsetPoint function to create the neighbor
-    var neighbor = offsetPoint(lat, lon, distance, bearing);
-    
-    // Get the cost at one point, that is the neighbor
-    var costResult = cumulative.reduceRegion({
-      reducer: ee.Reducer.first(),
-      geometry: neighbor,
-      scale: stepSize,
-      maxPixels: 1
-    });
-    
-    // Always ensure we have a valid cost value
-    var cost = ee.Number(999999); // Default high cost
-    cost = ee.Algorithms.If(
-      costResult.size().gt(0), // If the result has any keys
-      ee.Number(costResult.values().get(0)), // Get the first value
-      cost
-    );
-
-    return ee.Dictionary({
-      'point': neighbor,
-      'cost': cost
-    });
+  // Use the pre-calculated neighborhood image to find the neighbor costs.
+  // This is a very cheap "lookup" operation.
+  var costs = costNeighborhood.reduceRegion({
+    reducer: ee.Reducer.first(),
+    geometry: lastPoint,
+    scale: 30
   });
 
-  // Choose neighbor with lowest cost - simplified approach
-  var best = neighbors.iterate(function(neighbor, acc) {
-    neighbor = ee.Dictionary(neighbor);
-    acc = ee.Dictionary(acc);
-    var neighborCost = ee.Number(neighbor.get('cost'));
-    var accCost = ee.Number(acc.get('cost'));
-    
-    // Ensure both costs are valid numbers before comparison
-    var validNeighborCost = ee.Algorithms.If(
-      neighborCost,
-      neighborCost,
-      ee.Number(999999)
-    );
-    
-    var validAccCost = ee.Algorithms.If(
-      accCost,
-      accCost,
-      ee.Number(999999)
-    );
-    
-    // Check if both costs are valid before comparison
-    return ee.Algorithms.If(
-      ee.Number(validNeighborCost).lt(ee.Number(validAccCost)),
-      neighbor,
-      acc
-    );
-  }, ee.Dictionary({ 'point': lastPoint, 'cost': costAtPoint }));
+  // Find the direction (band name) corresponding to the minimum cost.
+  var minCost = costs.values().reduce(ee.Reducer.min());
   
-  var bestDict = ee.Dictionary(best);
-  var nextPoint = ee.Geometry(bestDict.get('point'));
-  var nextCost = ee.Number(bestDict.get('cost'));
-
-  // Stop if cost did not decrease (reached source)
-  return ee.Algorithms.If(
-    nextCost.gte(costAtPoint),
-    prev,
-    ee.Dictionary({
-      'point': nextPoint,
-      'path': prevList.add(nextPoint)
-    })
+  // Add null checking to prevent indexOf error
+  var nextPixelIndex = ee.Algorithms.If(
+    minCost,
+    costs.values().indexOf(minCost),
+    0  // Default to first element if minCost is null
   );
-}, ee.Dictionary({ 'point': destGeom, 'path': ee.List([destGeom]) }));
+  
+  var nextDirection = ee.List(costs.keys()).get(nextPixelIndex);
+  
+  // Calculate the coordinates of the next point based on the chosen direction.
+  // The band names '..._1_0' etc., correspond to row/column offsets.
+  var parts = ee.String(nextDirection).split('_');
+  var dRow = ee.Number.parse(parts.get(2)).subtract(1); // Row offset (-1, 0, or 1)
+  var dCol = ee.Number.parse(parts.get(3)).subtract(1); // Col offset (-1, 0, or 1)
+  
+  var proj = cumulative.projection();
+  var currentCoords = lastPoint.transform(proj).coordinates();
+  var newX = ee.Number(currentCoords.get(0)).add(ee.Number(dCol).multiply(proj.nominalScale()));
+  var newY = ee.Number(currentCoords.get(1)).subtract(ee.Number(dRow).multiply(proj.nominalScale()));
 
-// --- Step 3: Convert list of points to a LineString
-var pathLine = ee.Geometry.LineString(ee.Dictionary(walk).get('path'));
+  // Validate that coordinates are valid numbers using Earth Engine methods
+  // Check that coordinates are not null and are reasonable values
+  var isValidX = newX.and(newX.gt(-180).and(newX.lt(180)));  // Valid longitude range
+  var isValidY = newY.and(newY.gt(-90).and(newY.lt(90)));    // Valid latitude range
+  var bothValid = isValidX.and(isValidY);
+  
+  // Create the new point coordinates only if they are valid
+  var nextPointCoords = ee.Algorithms.If(
+    bothValid,
+    [newX, newY],
+    lastPointCoords  // Use previous coordinates if new ones are invalid
+  );
 
-// --- Step 4: Display
-Map.addLayer(pathLine, {color: 'purple'}, 'Least Cost Path');
+  // If at the source, stop. Otherwise, add the new point coordinates to the path.
+  return ee.Algorithms.If(atSource, previousPath, previousPath.add(nextPointCoords));
+}, initialPath);
+
+
+// --- Step 4: Convert list of points to a LineString
+// Debug: First, let's examine what we have in the path using proper Earth Engine methods
+print('Path object:', path);
+print('First path element:', ee.List(path).get(0));
+
+// Since we're now storing coordinate lists directly, we can use them as-is
+var pathLine = ee.Geometry.LineString(path);
+
+// --- Step 5: Display
+Map.addLayer(pathLine, {color: 'FF0000', width: 2}, 'Least Cost Path (Efficient)');
+
+// Print path details for debugging
+print('Number of steps in path:', ee.List(path).length());
