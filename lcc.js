@@ -32,16 +32,15 @@ var landSeaMask = dem.where(dem.lte(0), 10000).where(dem.gt(0), 1);
 
 // Create cost raster
 var tobCost = computeToblersCost(slope, landSeaMask);
-print(tobCost);
 //Map.addLayer(tobCost, {min: 0, max: 10000, palette: ['white', 'green', 'yellow', 'red']}, 'Cost Surface');
 
 
 // Converting the point to image
-var startPoint = ee.FeatureCollection('projects/ee-poleinikov/assets/scotstart');
+var startPoint = ee.FeatureCollection('');
 Map.addLayer(startPoint, {color: 'blue'}, 'Start Point');
-var midPoint = ee.FeatureCollection('projects/ee-poleinikov/assets/scotmid');
+var midPoint = ee.FeatureCollection('');
 Map.addLayer(midPoint, {color: 'blue'}, 'Mid Point');
-var endPoint = ee.FeatureCollection('projects/ee-poleinikov/assets/scotend');
+var endPoint = ee.FeatureCollection('');
 Map.addLayer(endPoint, {color: 'blue'}, 'End Point');
 
 var startPointImage = startPoint
@@ -67,27 +66,28 @@ var endPointImage = endPoint
   });
   
 // specify region of interest
-var roi = startPoint.first().geometry().buffer(35000).bounds();
+var roi = startPoint.first().geometry().buffer(60000).bounds();
 var clippedCost = tobCost.clip(roi);
+Map.addLayer(roi, {color: 'purple'}, 'ROI');
 
 // Run cumulative cost function
-var cCostFromStart = clippedCost.cumulativeCost(startPointImage, 30000, false)
-var cCostFromMid = clippedCost.cumulativeCost(midPointImage, 30000, false)
-//var cCostFromEnd = tobCost.cumulativeCost(endPointImage, 30000, false)
+var cCostFromStart = clippedCost.cumulativeCost(startPointImage, 70000, false)
+var cCostFromMid = clippedCost.cumulativeCost(midPointImage, 70000, false)
+var cCostFromEnd = tobCost.cumulativeCost(endPointImage, 70000, false)
 //Map.addLayer(cCostFromMid, {min: 0, max: 30000, palette: ['white', 'yellow', 'orange', 'red', 'black']}, 'Cumulative Cost from mid')
 //Map.addLayer(cCostFromStart, {min: 0, max: 30000, palette: ['white', 'yellow', 'orange', 'red', 'black']}, 'Cumulative Cost from start')
 //Map.addLayer(cCostFromEnd, {min: 0, max: 30000, palette: ['white', 'yellow', 'orange', 'red', 'black']}, 'Cumulative Cost from end')
 
 // Add the two cumulative cost rasters
-// var addedCost = cCostFromStart.add(cCostFromEnd);
-var addedCost = cCostFromStart.add(cCostFromMid).clip(roi);
+var startMidAddedCost = cCostFromStart.add(cCostFromMid).clip(roi);
+var startEndAddedCost = cCostFromStart.add(cCostFromEnd).clip(roi);
 
 // Declare how much to scale up the raster by to increase computation speed
 // This appears to have the largest impact on computation time
 var scale_up = 3;
 
-// Find the minimum cost from addedCost raster
-var minCostDict = addedCost.reduceRegion({
+// Find the minimum cost from startMidAddedCost raster
+var startMidMinCostDict = startMidAddedCost.reduceRegion({
   // reducer being min means we are getting the minimum from all pixels in addedCost
   reducer: ee.Reducer.min(),
   geometry: clippedCost.geometry(),
@@ -97,15 +97,15 @@ var minCostDict = addedCost.reduceRegion({
   bestEffort: true
 });
 
-var minCost = ee.Number(minCostDict.get('cumulative_cost'));
+var startMidMinCost = ee.Number(startMidMinCostDict.get('cumulative_cost'));
 
 // Get pixels in LCC by selecting those with cost ≤ minCost + threshold
 // tolerance has same units as cost, which is derived from Tobler's hiking function
 var tolerance = 1;
-var leastCostCorridor = addedCost.lte(minCost.add(tolerance));
+var startMidLeastCostCorridor = startMidAddedCost.lte(startMidMinCost.add(tolerance));
 
 // Convert the raster path to a vector. This is more robust for visualization.
-var pathVector = leastCostCorridor.selfMask().reduceToVectors({
+var startMidPathVector = startMidLeastCostCorridor.selfMask().reduceToVectors({
   geometry: clippedCost.geometry(),
   scale: 30 * scale_up,
   geometryType: 'polygon',
@@ -113,21 +113,64 @@ var pathVector = leastCostCorridor.selfMask().reduceToVectors({
   bestEffort: true
 });
 
-print(pathVector)
-
 // Style the vector path to be a thick, bright red line.
-var styledPath = pathVector.style({
+var startMidStyledPath = startMidPathVector.style({
   color: 'FF0000', // Bright red
   width: 3       // Line width in pixels
 });
 
 // Add the styled path to the map.
-Map.addLayer(styledPath, {}, 'Least-Cost Path (Styled Vector)');
-//Map.addLayer(corridor.selfMask(), {palette: ['red']}, 'Least Cost Corridor');
-//Map.centerObject(styledPath, 18)
+Map.addLayer(startMidStyledPath, {}, 'Least-Cost Path (Styled Vector)');
 
-Export.table.toDrive({
-  collection: pathVector,
-  description: 'lcc_export',
-  fileFormat: 'SHP'
+// Export if necessary
+//Export.table.toDrive({
+//  collection: pathVector,
+//  description: 'lcc_export',
+//  fileFormat: 'SHP'
+//});
+
+// Increasing scale_up for larger search area from start to end
+var scale_up = 6;
+
+// Find the minimum cost from startEndAddedCost raster
+var startEndMinCostDict = startEndAddedCost.reduceRegion({
+  // reducer being min means we are getting the minimum from all pixels in addedCost
+  reducer: ee.Reducer.min(),
+  geometry: clippedCost.geometry(),
+  scale: 30 * scale_up,  // using a coarser scale for better speed
+  maxPixels: 1e13,
+  // if too many pixels at given scale, bestEffort uses a larger scale to ensure function runs successfully
+  bestEffort: true
 });
+
+var startEndMinCost = ee.Number(startEndMinCostDict.get('cumulative_cost'));
+
+// Get pixels in LCC by selecting those with cost ≤ minCost + threshold
+// tolerance has same units as cost, which is derived from Tobler's hiking function
+var tolerance = 1;
+var startEndLeastCostCorridor = startEndAddedCost.lte(startEndMinCost.add(tolerance));
+
+// Convert the raster path to a vector. This is more robust for visualization.
+var startEndPathVector = startEndLeastCostCorridor.selfMask().reduceToVectors({
+  geometry: clippedCost.geometry(),
+  scale: 30 * scale_up,
+  geometryType: 'polygon',
+  eightConnected: true,
+  bestEffort: true
+});
+
+// Style the vector path to be a thick, bright red line.
+var startEndStyledPath = startEndPathVector.style({
+  color: '17ff00', // Bright green
+  width: 3       // Line width in pixels
+});
+
+// Add the styled path to the map.
+Map.addLayer(startEndStyledPath, {}, 'Least-Cost Path (Styled Vector)');
+Map.centerObject(midPoint, 9.5)
+
+// Import least cost paths generated from QGIS
+var startMidLCP = ee.FeatureCollection('');
+Map.addLayer(startMidLCP, {color: 'blue'}, 'Start Mid LCP');
+var startEndLCP = ee.FeatureCollection('');
+Map.addLayer(startEndLCP, {color: 'blue'}, 'Start End LCP');
