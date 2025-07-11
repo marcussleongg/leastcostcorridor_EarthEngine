@@ -16,6 +16,7 @@ function computeToblersCost (slope, waterMask) {
   // Apply water mask, assuming waterMask is a binary image where 1 is water
   var fullCost = landCost
     .where(waterMask.eq(1), 10000);  // set cost=10000 where it is water
+
   return fullCost;
 }
 
@@ -30,14 +31,18 @@ var occurrence = gsw.select('occurrence');
 var VIS_WATER_MASK = {
   palette: ['white', 'black']
 };
-
-// Create a water mask layer, and set the image mask so that non-water areas are opaque.
+// Create a water mask layer, and set the image mask so that non-water areas
+// are opaque.
 var water_mask = occurrence.gt(90).unmask(0);
 Map.addLayer({
   eeObject: water_mask,
   visParams: VIS_WATER_MASK,
   name: '90% occurrence water mask'
 });
+
+// Quick approximation of land/sea mask purely based on elevation
+var landSeaMask = dem.where(dem.lte(0), 10000).where(dem.gt(0), 1);
+//Map.addLayer(landSeaMask, {min: 0, max: 10000, palette: ['blue', 'green']}, 'Land/Sea Mask');
 
 // Create cost raster
 var tobCost = computeToblersCost(slope, water_mask);
@@ -138,7 +143,7 @@ Map.addLayer(startMidStyledPath, {}, 'Least-Cost Path (Styled Vector)');
 //});
 
 // Use larger scale_up for start to end corridor calculation
-var scale_up = 6;
+var scale_up = 8;
 
 // Find the minimum cost from startEndAddedCost raster
 var startEndMinCostDict = startEndAddedCost.reduceRegion({
@@ -157,11 +162,7 @@ var startEndMinCost = ee.Number(startEndMinCostDict.get('cumulative_cost'));
 // tolerance has same units as cost, which is derived from Tobler's hiking function
 var tolerance = 1;
 var startEndLeastCostCorridor = startEndAddedCost.lte(startEndMinCost.add(tolerance));
-Map.addLayer(
-  startEndLeastCostCorridor.selfMask(), 
-  {palette: ['#00FF00']}, // Green
-  'BROAD Corridor (Pixels)'
-);
+
 // Convert the raster path to a vector. This is more robust for visualization.
 var startEndPathVector1 = startEndLeastCostCorridor.selfMask().reduceToVectors({
   geometry: clippedCost.geometry(),
@@ -202,7 +203,7 @@ var startEndMinCostDict2 = refinedAddedCost.reduceRegion({
   // reducer being min means we are getting the minimum from all pixels in masked cost
   reducer: ee.Reducer.min(),
   geometry: clippedCost.geometry(),
-  scale: 30 * 5,  // using a coarser scale for better speed
+  scale: 30 * 6,  // using a coarser scale for better speed
   maxPixels: 1e13,
   // if too many pixels at given scale, bestEffort uses a larger scale to ensure function runs successfully
   bestEffort: true
@@ -214,15 +215,11 @@ var startEndMinCost2 = ee.Number(startEndMinCostDict2.get('cumulative_cost'));
 // tolerance has same units as cost, which is derived from Tobler's hiking function
 var tolerance2 = 1;
 var startEndLeastCostCorridor2 = refinedAddedCost.lte(startEndMinCost2.add(tolerance2));
-Map.addLayer(
-  startEndLeastCostCorridor2.selfMask(),
-  {palette: ['#FF0000']}, // Red
-  'REFINED Corridor (Pixels)'
-);
+
 // Convert the raster path to a vector. This is more robust for visualization.
 var startEndPathVector = startEndLeastCostCorridor2.selfMask().reduceToVectors({
   geometry: clippedCost.geometry(),
-  scale: 30 * 5,  // use consistent scale from the masked calculation
+  scale: 30 * 6,  // use consistent scale from the masked calculation
   geometryType: 'polygon',
   eightConnected: true,
   bestEffort: true
@@ -235,11 +232,17 @@ var startEndStyledPath = startEndPathVector.style({
 });
 
 // Add the styled path to the map.
-Map.addLayer(startEndStyledPath, {}, 'Least-Cost Path (Styled Vector)');
+Map.addLayer(startEndStyledPath, {}, 'Least-Cost Path2 (Styled Vector)');
 Map.centerObject(midPoint, 9.5);
 
 // Import least cost paths generated from QGIS
 var startMidLCP = ee.FeatureCollection('');
-Map.addLayer(startMidLCP, {color: 'blue'}, 'Start Mid LCP');
+Map.addLayer(startMidLCP, {color: 'blue'}, 'Start Mid LCP QGIS');
 var startEndLCP = ee.FeatureCollection('');
-Map.addLayer(startEndLCP, {color: 'blue'}, 'Start End LCP');
+Map.addLayer(startEndLCP, {color: 'blue'}, 'Start End LCP QGIS');
+
+// Import least cost paths generated from ArcGIS
+var startMidLCPArc = ee.FeatureCollection('');
+Map.addLayer(startMidLCPArc, {color: 'pink'}, 'Start Mid LCP ArcGIS');
+var startEndLCPArc = ee.FeatureCollection('');
+Map.addLayer(startEndLCPArc, {color: 'pink'}, 'Start End LCP ArcGIS');
