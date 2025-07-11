@@ -13,10 +13,9 @@ function computeToblersCost (slope, waterMask) {
     .pow(-1)
     .min(10000);  // cap the Tobler cost itself before combining
 
-  // Apply water mask
+  // Apply water mask, assuming waterMask is a binary image where 1 is water
   var fullCost = landCost
-    .where(waterMask.eq(10000), 10000);  // set cost=10000 where it is water
-
+    .where(waterMask.eq(1), 10000);  // set cost=10000 where it is water
   return fullCost;
 }
 
@@ -26,21 +25,30 @@ var slope = ee.Terrain.slope(dem);
 Map.addLayer(slope, {min: 0, max: 89.99}, 'Slope');
 //Map.addLayer(slope, {min: 0, max: 89.99}, 'Slope');
 
-// Quick approximation of land/sea mask purely based on elevation
-var landSeaMask = dem.where(dem.lte(0), 10000).where(dem.gt(0), 1);
-//Map.addLayer(landSeaMask, {min: 0, max: 10000, palette: ['blue', 'green']}, 'Land/Sea Mask');
+var gsw = ee.Image("JRC/GSW1_4/GlobalSurfaceWater");
+var occurrence = gsw.select('occurrence');
+var VIS_WATER_MASK = {
+  palette: ['white', 'black']
+};
+
+// Create a water mask layer, and set the image mask so that non-water areas are opaque.
+var water_mask = occurrence.gt(90).unmask(0);
+Map.addLayer({
+  eeObject: water_mask,
+  visParams: VIS_WATER_MASK,
+  name: '90% occurrence water mask'
+});
 
 // Create cost raster
-var tobCost = computeToblersCost(slope, landSeaMask);
+var tobCost = computeToblersCost(slope, water_mask);
 //Map.addLayer(tobCost, {min: 0, max: 10000, palette: ['white', 'green', 'yellow', 'red']}, 'Cost Surface');
 
-
 // Converting the point to image
-var startPoint = ee.FeatureCollection('projects/ee-poleinikov/assets/scotstart');
+var startPoint = ee.FeatureCollection('');
 Map.addLayer(startPoint, {color: 'blue'}, 'Start Point');
-var midPoint = ee.FeatureCollection('projects/ee-poleinikov/assets/scotmid');
+var midPoint = ee.FeatureCollection('');
 Map.addLayer(midPoint, {color: 'blue'}, 'Mid Point');
-var endPoint = ee.FeatureCollection('projects/ee-poleinikov/assets/scotend');
+var endPoint = ee.FeatureCollection('');
 Map.addLayer(endPoint, {color: 'blue'}, 'End Point');
 
 var startPointImage = startPoint
@@ -149,7 +157,11 @@ var startEndMinCost = ee.Number(startEndMinCostDict.get('cumulative_cost'));
 // tolerance has same units as cost, which is derived from Tobler's hiking function
 var tolerance = 1;
 var startEndLeastCostCorridor = startEndAddedCost.lte(startEndMinCost.add(tolerance));
-
+Map.addLayer(
+  startEndLeastCostCorridor.selfMask(), 
+  {palette: ['#00FF00']}, // Green
+  'BROAD Corridor (Pixels)'
+);
 // Convert the raster path to a vector. This is more robust for visualization.
 var startEndPathVector1 = startEndLeastCostCorridor.selfMask().reduceToVectors({
   geometry: clippedCost.geometry(),
@@ -170,10 +182,23 @@ Map.addLayer(startEndStyledPath1, {}, 'Least-Cost Path1 (Styled Vector)');
 
 //next
 // Mask the cost calculation to only consider areas within the first corridor
-var maskedStartEndCost = startEndAddedCost.updateMask(startEndLeastCostCorridor);
+var corridorCostSurface = tobCost.updateMask(startEndLeastCostCorridor.selfMask());
+
+var cCostFromStart_InCorridor = corridorCostSurface.cumulativeCost(
+  startPointImage, 
+  70000, 
+  false
+);
+var cCostFromEnd_InCorridor = corridorCostSurface.cumulativeCost(
+  endPointImage, 
+  70000, 
+  false
+);
+
+var refinedAddedCost = cCostFromStart_InCorridor.add(cCostFromEnd_InCorridor);
 
 // Find the minimum cost from the masked cost raster
-var startEndMinCostDict2 = maskedStartEndCost.reduceRegion({
+var startEndMinCostDict2 = refinedAddedCost.reduceRegion({
   // reducer being min means we are getting the minimum from all pixels in masked cost
   reducer: ee.Reducer.min(),
   geometry: clippedCost.geometry(),
@@ -187,9 +212,13 @@ var startEndMinCost2 = ee.Number(startEndMinCostDict2.get('cumulative_cost'));
 
 // Get pixels in LCC by selecting those with cost ≤ minCost + threshold
 // tolerance has same units as cost, which is derived from Tobler's hiking function
-var tolerance2 = 0.5;
-var startEndLeastCostCorridor2 = maskedStartEndCost.lte(startEndMinCost2.add(tolerance2));
-
+var tolerance2 = 1;
+var startEndLeastCostCorridor2 = refinedAddedCost.lte(startEndMinCost2.add(tolerance2));
+Map.addLayer(
+  startEndLeastCostCorridor2.selfMask(),
+  {palette: ['#FF0000']}, // Red
+  'REFINED Corridor (Pixels)'
+);
 // Convert the raster path to a vector. This is more robust for visualization.
 var startEndPathVector = startEndLeastCostCorridor2.selfMask().reduceToVectors({
   geometry: clippedCost.geometry(),
@@ -210,7 +239,7 @@ Map.addLayer(startEndStyledPath, {}, 'Least-Cost Path (Styled Vector)');
 Map.centerObject(midPoint, 9.5);
 
 // Import least cost paths generated from QGIS
-var startMidLCP = ee.FeatureCollection('projects/ee-poleinikov/assets/scot_lcp_start_mid_wgs84');
+var startMidLCP = ee.FeatureCollection('');
 Map.addLayer(startMidLCP, {color: 'blue'}, 'Start Mid LCP');
-var startEndLCP = ee.FeatureCollection('projects/ee-poleinikov/assets/scot_lcp_start_end_wgs84');
+var startEndLCP = ee.FeatureCollection('');
 Map.addLayer(startEndLCP, {color: 'blue'}, 'Start End LCP');
