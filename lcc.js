@@ -15,7 +15,7 @@ function computeToblersCost (slope, waterMask) {
 
   // Apply water mask
   var fullCost = landCost
-    .where(waterMask.eq(10000), 10000);  // set cost=10000 where it is water
+    .where(waterMask.eq(1), 10000);  // set cost=10000 where it is water
 
   return fullCost;
 }
@@ -24,16 +24,30 @@ function computeToblersCost (slope, waterMask) {
 var dem = ee.Image('NASA/NASADEM_HGT/001').select('elevation');
 var slope = ee.Terrain.slope(dem);
 Map.addLayer(slope, {min: 0, max: 89.99}, 'Slope');
-//Map.addLayer(slope, {min: 0, max: 89.99}, 'Slope');
+
+var gsw = ee.Image("JRC/GSW1_4/GlobalSurfaceWater");
+var occurrence = gsw.select('occurrence');
+var VIS_WATER_MASK = {
+  palette: ['white', 'black']
+};
+// Create a water mask layer, and set the image mask so that non-water areas are opaque.
+var water_mask = occurrence.gt(90).unmask(0);
+Map.addLayer({
+  eeObject: water_mask,
+  visParams: VIS_WATER_MASK,
+  name: '90% occurrence water mask'
+});
 
 // Quick approximation of land/sea mask purely based on elevation
 var landSeaMask = dem.where(dem.lte(0), 10000).where(dem.gt(0), 1);
 //Map.addLayer(landSeaMask, {min: 0, max: 10000, palette: ['blue', 'green']}, 'Land/Sea Mask');
 
 // Create cost raster
-var tobCost = computeToblersCost(slope, landSeaMask);
+var tobCost = computeToblersCost(slope, water_mask);
 //Map.addLayer(tobCost, {min: 0, max: 10000, palette: ['white', 'green', 'yellow', 'red']}, 'Cost Surface');
 
+var tobCostMasked = tobCost.updateMask(water_mask);
+Map.addLayer(tobCostMasked, {color: 'yellow'}, 'Toblers Cost masked with water');
 
 // Converting the point to image
 var startPoint = ee.FeatureCollection('');
@@ -102,9 +116,9 @@ print(startMidMinCost);
 
 // Get pixels in LCC by selecting those with cost ≤ minCost + threshold
 // tolerance has same units as cost, which is derived from Tobler's hiking function
-var tolerance = 200;
+var tolerance = 20;
 var startMidLeastCostCorridor = startMidAddedCost.lte(startMidMinCost.add(tolerance));
-Map.addLayer(startMidLeastCostCorridor, {}, 'corridor itself')
+
 // Convert the raster path to a vector. This is more robust for visualization.
 var startMidPathVector = startMidLeastCostCorridor.selfMask().reduceToVectors({
   geometry: clippedCost.geometry(),
@@ -123,29 +137,7 @@ var startMidStyledPath = startMidPathVector.style({
 // Add the styled path to the map.
 Map.addLayer(startMidStyledPath, {}, 'Least-Cost Path (Styled Vector)');
 print(startMidLeastCostCorridor);
-// Convolution edge detection
-// 1. Mask the original DEM to the shape of your calculated corridor.
-var costInCorridor = clippedCost.updateMask(startMidLeastCostCorridor);
-Map.addLayer(costInCorridor, {min: 0, max: 15000, palette:['#fde725', '#5ec962', '#21918c', '#3b528b', '#440154']}, 'Cost in Corridor');
-print(costInCorridor);
-// 2. Perform edge detection on the masked DEM to find sharp elevation changes.
-// A Laplacian kernel highlights areas of high second-derivative (i.e., edges).
-var laplacian = ee.Kernel.laplacian8({ normalize: false });
-var edges = clippedCost.convolve(laplacian);
 
-// 3. Take the absolute value. High values are now edges/slopes, values near zero are flat.
-var absEdges = edges.abs();
-Map.addLayer(absEdges, {min: 0, max: 50, palette: ['#000000', '#FFFFFF']}, 'Corridor Edges');
-
-// 4. Filter for low gradient points.
-// We select pixels where the edge value is *less than* a threshold.
-// This effectively inverts the edge map, showing flat areas instead of steep ones.
-// **ADJUST THIS THRESHOLD** to control how "flat" an area must be to be included.
-var lowGradientThreshold = 0.02;
-var lowGradientAreas = absEdges.lte(lowGradientThreshold).selfMask();
-
-// 5. Add the final image of low-gradient areas to the map.
-Map.addLayer(lowGradientAreas, {palette: ['#00FF00']}, 'Low Gradient Areas in Corridor');
 // Export if necessary
 //Export.table.toDrive({
 //  collection: pathVector,
@@ -191,7 +183,32 @@ var startEndStyledPath = startEndPathVector.style({
 
 // Add the styled path to the map.
 Map.addLayer(startEndStyledPath, {}, 'Least-Cost Path (Styled Vector)');
-Map.centerObject(midPoint, 9.5)
+Map.centerObject(midPoint, 9.5);
+
+// Convolution edge detection
+// 1. Mask the original DEM to the shape of your calculated corridor.
+//var costInCorridor = clippedCost.updateMask(startMidLeastCostCorridor);
+//Map.addLayer(costInCorridor, {min: 0, max: 15000, palette:['#fde725', '#5ec962', '#21918c', '#3b528b', '#440154']}, 'Cost in Corridor');
+
+// 2. Perform edge detection on the masked DEM to find sharp elevation changes.
+// A Laplacian kernel highlights areas of high second-derivative (i.e., edges).
+var laplacian = ee.Kernel.laplacian8({ normalize: false });
+var edges = clippedCost.convolve(laplacian);
+
+// 3. Take the absolute value. High values are now edges/slopes, values near zero are flat.
+var absEdges = edges.abs();
+
+// 4. Filter for low gradient points.
+// We select pixels where the edge value is *less than* a threshold.
+// This effectively inverts the edge map, showing flat areas instead of steep ones.
+// **ADJUST THIS THRESHOLD** to control how "flat" an area must be to be included.
+var lowGradientThreshold = 0.02;
+var lowGradientAreas = absEdges.lte(lowGradientThreshold).selfMask();
+
+Map.addLayer(lowGradientAreas, {palette: ['white']}, 'Low Gradient Areas');
+// 5. Add the final image of low-gradient areas to the map.
+var lowGradientInCorridor = lowGradientAreas.updateMask(startMidLeastCostCorridor);
+Map.addLayer(lowGradientInCorridor, {palette: ['#F5EF42']}, 'Low Gradient Areas in Corridor');
 
 // Import least cost paths generated from QGIS
 var startMidLCP = ee.FeatureCollection('');
