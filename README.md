@@ -14,6 +14,10 @@ To run LCC between all intermediate and start and end points, make sure the func
 Note that GEE's **memory limit** can prevent the script from completing, depending on distance between the points. The algorithm uses downsampled cost rasters that are progressively refined, which can be adjusted to allow for script completion or quicker run times.\
 Adjust `var lcc_rounds = 3;` for the number of rounds of progressive refinement. The smaller the less rounds of refinement and hence the final LCC can run on a lower resolution cost raster. This can cause **less precise** LCC outputs.\
 Adjust `var initial_downsample = 50;` for the initial downsampling of the cost raster. The larger the lower the resolution and hence the quicker the processing time. This can cause **less precise** LCC outputs.
+### Processing time
+Note that GEE's **memory limit** can prevent the script from completing, depending on distance between the points. The algorithm uses downsampled cost rasters that are progressively refined, which can be adjusted to allow for script completion or quicker run times.\
+Adjust `var lcc_rounds = 3;` for the number of rounds of progressive refinement. The smaller the less rounds of refinement and hence the final LCC can run on a lower resolution cost raster. This can cause **less precise** LCC outputs.\
+Adjust `var initial_downsample = 50;` for the initial downsampling of the cost raster. The larger the lower the resolution and hence the quicker the processing time. This can cause **less precise** LCC outputs.
 
 ### Other variables that can be adjusted
 Parameters like LCC tolerance threshold, which determines "how many" pixels are accepted for the LCC, region of interest cushion, color of corridor, etc. can also be changed and are found towards the top of the code.
