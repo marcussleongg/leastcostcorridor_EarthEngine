@@ -1,4 +1,5 @@
 <img width="2240" height="2016" alt="apprenticeship_poster" src="https://github.com/user-attachments/assets/913c60bf-595c-482e-8986-571485ce939a" />
+
 # Least cost corridor implementation in Google Earth Engine
 
 ## Using the code
